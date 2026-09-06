@@ -11,7 +11,6 @@ import java.util.stream.Collectors;
 
 import org.semanticweb.owlapi.apibinding.OWLManager;
 import org.semanticweb.owlapi.functional.parser.OWLFunctionalSyntaxOWLParserFactory;
-import org.semanticweb.owlapi.io.OWLParserException;
 import org.semanticweb.owlapi.io.OWLParserFactory;
 import org.semanticweb.owlapi.model.OWLOntology;
 import org.semanticweb.owlapi.model.OWLOntologyCreationException;
@@ -115,6 +114,16 @@ public class ProtocOWLTest {
         try (FileOutputStream fos = new FileOutputStream(badFile)) {
             fos.write(99); // Versione 99 (non supportata)
             fos.write(Constants.FRAME_END);
+        }
+        loadOntology(badFile.getAbsolutePath(), new ProtocOWLParserFactory());
+    }
+
+    @Test(expectedExceptions = OWLOntologyCreationException.class)
+    public void testUnsupportedFrame() throws Exception {
+        File badFile = File.createTempFile("bad_frame", ".oprt");
+        try (FileOutputStream fos = new FileOutputStream(badFile)) {
+            fos.write(Constants.PROTOCOWL_VERSION);
+            fos.write(0x3F);
         }
         loadOntology(badFile.getAbsolutePath(), new ProtocOWLParserFactory());
     }
