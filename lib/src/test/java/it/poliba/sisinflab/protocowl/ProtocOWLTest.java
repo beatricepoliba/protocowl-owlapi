@@ -32,7 +32,9 @@ public class ProtocOWLTest {
     public static void assertEquals(OWLOntology in, OWLOntology out) {
         var axiomsA = in.axioms().collect(Collectors.toSet());
         var axiomsB = out.axioms().collect(Collectors.toSet());
-        String diagnostic = comparisonDiagnostic(in, out, axiomsA, axiomsB);
+        // Avoid building a potentially enormous diff on successful comparisons.
+        String diagnostic = axiomsA.equals(axiomsB) ? "Axioms match"
+                : comparisonDiagnostic(in, out, axiomsA, axiomsB);
 
         // 1. Controlla se gli ID delle ontologie sono uguali (incluso il Version IRI)
         Assert.assertEquals(in.isNamed(), out.isNamed(), diagnostic);
@@ -41,6 +43,8 @@ public class ProtocOWLTest {
             // RAFFORZAMENTO: Controllo del Version IRI 
             Assert.assertEquals(in.getOntologyID().getVersionIRI(), out.getOntologyID().getVersionIRI(), diagnostic);
         }
+
+        Assert.assertEquals(in.getImportsDeclarations(), out.getImportsDeclarations(), "Imports differ: " + diagnostic);
 
         // 2. Controlla se i prefissi sono uguali (normalizzando il prefisso di default se derivato dall'Ontology IRI)
         var inFormat = in.getNonnullFormat().asPrefixOWLDocumentFormat();
@@ -96,6 +100,7 @@ public class ProtocOWLTest {
 
     static OWLOntology loadOntology(String filePath, OWLParserFactory parser) throws OWLOntologyCreationException {
         var manager = OWLManager.createOWLOntologyManager();
+        manager.getOntologyConfigurator().withRemapAllAnonymousIndividualsIds(false);
         manager.setOntologyParsers(Set.of(parser));
         try (var stream = new BufferedInputStream(new FileInputStream(filePath))) {
             return manager.loadOntologyFromOntologyDocument(stream);
