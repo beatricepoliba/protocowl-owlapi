@@ -1,6 +1,7 @@
 package it.poliba.sisinflab.protocowl;
 
 import java.io.IOException;
+import java.math.BigInteger;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -68,14 +69,14 @@ class Parser {
         // Legge i frame fino a fine stream.
         int header;
         while ((header = stream.read()) != -1) {
-            long framePos = stream.getCount() - 1;
+
             // Estrae tipo frame (6 bit bassi) e utility flag (2 bit alti).
             int type = header & 0x3F;
             int utility = header >> 6;
 
             if (firstFrame) {
                 firstFrame = false;
-                if (type == 0x2A || type == 0x2B || type == 0x2C || type <= 0x03) {
+                if (type == 0x2A || type == 0x2B || type == 0x2C) {
                     isLegacyDialect = true;
                 }
             }
@@ -84,8 +85,6 @@ class Parser {
             if (!isLegacyDialect && type == Constants.FRAME_END) break;
             if (isLegacyDialect && type == 0x03 && utility == 0 && stream.available() == 0) break;
 
-            logFrame(String.format("FRAME at pos %d (avail %d): 0x%02X (type=%d, util=%d)",
-                    framePos, stream.available(), header, type, utility));
 
             // Instrada il frame al parser specializzato.
             parseFrame(type, utility, stream, ontology, format);
@@ -126,43 +125,28 @@ class Parser {
         }
     }
 
-    private static final java.util.List<String> lastFrames = new java.util.concurrent.CopyOnWriteArrayList<>();
-    private static long byteOffset = 0;
+    private List<OWLAnnotation> axiomAnnotations = List.of();
 
-    private void parseFrame(int type, int utility, InputStream stream, OWLOntology ontology, ProtocOWLDocumentFormat format) throws IOException {
-        String msg = String.format("FRAME: isLegacy=%b, type=0x%02X (%d), utility=%d, avail=%d", isLegacyDialect, type, type, utility, stream.available());
-        lastFrames.add(msg);
-        if (lastFrames.size() > 50) lastFrames.remove(0);
-        try {
-            if (isLegacyDialect) {
-                parseLegacyFrame(type, utility, stream, ontology, format);
-            } else {
-                parseModernFrame(type, utility, stream, ontology, format);
+    private void parseFrame(int type, int utility, InputStream stream, OWLOntology ontology,
+                            ProtocOWLDocumentFormat format) throws IOException {
+        axiomAnnotations = List.of();
+        if (!isLegacyDialect && type >= Constants.FRAME_CLASS_DECL && type <= Constants.FRAME_ANNOTATION_PROP_RANGE) {
+            if ((utility & 1) != 0) {
+                int count = readVarInt(stream);
+                List<OWLAnnotation> annotations = new ArrayList<>();
+                for (int i = 0; i < count; i++) annotations.add(parseAnnotation(stream));
+                axiomAnnotations = annotations;
             }
-        } catch (Throwable t) {
-            System.err.println("=== LAST 20 FRAMES BEFORE ERROR ===");
-            for (String f : lastFrames.subList(Math.max(0, lastFrames.size() - 20), lastFrames.size())) {
-                System.err.println("  " + f);
-            }
-            System.err.println("=== LAST 5 AXIOMS BEFORE ERROR ===");
-            for (OWLAxiom a : lastAxioms.subList(Math.max(0, lastAxioms.size() - 5), lastAxioms.size())) {
-                System.err.println("  " + a);
-            }
-            throw t;
         }
+        if (isLegacyDialect) parseLegacyFrame(type, utility, stream, ontology, format);
+        else parseModernFrame(type, utility, stream, ontology, format);
     }
 
-    private final java.util.List<String> lastDebugLogs = new java.util.ArrayList<>();
-
-    private void logFrame(String msg) {
-        if (lastDebugLogs.size() > 50) {
-            lastDebugLogs.remove(0);
-        }
-        lastDebugLogs.add(msg);
+    private void addAxiom(OWLOntology ontology, OWLAxiom axiom) {
+        ontology.add(axiomAnnotations.isEmpty() ? axiom : axiom.getAnnotatedAxiom(axiomAnnotations));
     }
 
     private void parseLegacyFrame(int type, int utility, InputStream stream, OWLOntology ontology, ProtocOWLDocumentFormat format) throws IOException {
-        logFrame(String.format("LEGACY FRAME: 0x%02X (%d), utility=%d, avail=%d, axioms=%d", type, type, utility, stream.available(), ontology.getAxiomCount()));
         switch (type) {
             case 0x2A: // FRAME_NAMESPACE_DECL legacy
                 parseNamespaceDeclaration(stream, utility, format);
@@ -223,31 +207,31 @@ class Parser {
                 parseObjectPropertyRange(stream, ontology);
                 break;
             case 0x10: // FRAME_FUNCTIONAL_OBJ_PROP legacy
-                ontology.add(dataFactory.getOWLFunctionalObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLFunctionalObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case 0x11: // FRAME_INVERSE_FUNCTIONAL_OBJ_PROP legacy
-                ontology.add(dataFactory.getOWLInverseFunctionalObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLInverseFunctionalObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case 0x12: // FRAME_REFLEXIVE_OBJ_PROP legacy
-                ontology.add(dataFactory.getOWLReflexiveObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLReflexiveObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case 0x13: // FRAME_IRREFLEXIVE_OBJ_PROP legacy
-                ontology.add(dataFactory.getOWLIrreflexiveObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLIrreflexiveObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case 0x14: // FRAME_SYMMETRIC_OBJ_PROP legacy
-                ontology.add(dataFactory.getOWLSymmetricObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLSymmetricObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case 0x15: // FRAME_ASYMMETRIC_OBJ_PROP legacy
-                ontology.add(dataFactory.getOWLAsymmetricObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLAsymmetricObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case 0x16: // FRAME_TRANSITIVE_OBJ_PROP legacy
-                ontology.add(dataFactory.getOWLTransitiveObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLTransitiveObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case 0x17: // FRAME_SUB_DATA_PROP legacy
@@ -312,7 +296,6 @@ class Parser {
     }
 
     private void parseModernFrame(int type, int utility, InputStream stream, OWLOntology ontology, ProtocOWLDocumentFormat format) throws IOException {
-        logFrame(String.format("MODERN/FALLBACK FRAME: 0x%02X (%d), utility=%d, avail=%d, axioms=%d", type, type, utility, stream.available(), ontology.getAxiomCount()));
         switch (type) {
             case Constants.FRAME_END:
                 return;
@@ -364,31 +347,31 @@ class Parser {
                 parseObjectPropertyRange(stream, ontology);
                 break;
             case Constants.FRAME_FUNCTIONAL_OBJ_PROP:
-                ontology.add(dataFactory.getOWLFunctionalObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLFunctionalObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case Constants.FRAME_INVERSE_FUNCTIONAL_OBJ_PROP:
-                ontology.add(dataFactory.getOWLInverseFunctionalObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLInverseFunctionalObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case Constants.FRAME_REFLEXIVE_OBJ_PROP:
-                ontology.add(dataFactory.getOWLReflexiveObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLReflexiveObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case Constants.FRAME_IRREFLEXIVE_OBJ_PROP:
-                ontology.add(dataFactory.getOWLIrreflexiveObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLIrreflexiveObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case Constants.FRAME_SYMMETRIC_OBJ_PROP:
-                ontology.add(dataFactory.getOWLSymmetricObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLSymmetricObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case Constants.FRAME_ASYMMETRIC_OBJ_PROP:
-                ontology.add(dataFactory.getOWLAsymmetricObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLAsymmetricObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case Constants.FRAME_TRANSITIVE_OBJ_PROP:
-                ontology.add(dataFactory.getOWLTransitiveObjectPropertyAxiom(
+                addAxiom(ontology, dataFactory.getOWLTransitiveObjectPropertyAxiom(
                         parseObjectPropertyExpression(stream)));
                 break;
             case Constants.FRAME_SAME_INDIVIDUAL:
@@ -448,13 +431,20 @@ class Parser {
             case Constants.FRAME_ANNOTATION_ASSERTION:
                 parseAnnotationAssertion(stream, ontology);
                 break;
+            case Constants.FRAME_ANNOTATION_PROP_DOMAIN:
+                addAxiom(ontology, dataFactory.getOWLAnnotationPropertyDomainAxiom(
+                        dataFactory.getOWLAnnotationProperty((IRI) getIdentifier(readVarInt(stream))),
+                        (IRI) getIdentifier(readVarInt(stream))));
+                break;
+            case Constants.FRAME_ANNOTATION_PROP_RANGE:
+                addAxiom(ontology, dataFactory.getOWLAnnotationPropertyRangeAxiom(
+                        dataFactory.getOWLAnnotationProperty((IRI) getIdentifier(readVarInt(stream))),
+                        (IRI) getIdentifier(readVarInt(stream))));
+                break;
             case Constants.FRAME_SUB_ANNOTATION_PROP:
                 parseSubAnnotationPropertyOf(stream, ontology);
                 break;
             default:
-                for (String log : lastDebugLogs) {
-                    System.err.println("TRACE: " + log);
-                }
                 throw new OWLParserException("Unsupported or unrecognized frame type: " + type + " (0x" + Integer.toHexString(type) + ", utility=" + utility + ", avail=" + stream.available() + ")");
         }
     }
@@ -471,8 +461,6 @@ class Parser {
             while (namespaces.size() > 5) {
                 namespaces.remove(namespaces.size() - 1);
             }
-            format.clear();
-            initReservedPrefixes(format);
         }
 
         if (resetIdentifiers) {
@@ -594,7 +582,7 @@ class Parser {
             for (int i = 0; i < count; i++) {
                 annotations.add(parseAnnotation(stream));
             }
-            header = readVarInt(stream); // Leggiamo l'header vero e proprio
+            header = readVarInt(stream) + 1; // Annotated form stores a raw AP identifier.
         }
         
         OWLAnnotationProperty ap = dataFactory.getOWLAnnotationProperty((IRI) getIdentifier(header - 1));
@@ -617,7 +605,7 @@ class Parser {
 
     private void parseEntityDeclaration(int type, InputStream stream, OWLOntology ontology) throws IOException {
         int id = readVarInt(stream);
-        OWLObject entity = identifiers.get(id);
+        OWLObject entity = getIdentifier(id);
         OWLEntity owlEntity = null;
 
         // Converte l'identificatore in OWLEntity solo quando l'elemento e un IRI.
@@ -632,57 +620,30 @@ class Parser {
             }
         }
 
-        if (owlEntity != null) {
-            ontology.add(dataFactory.getOWLDeclarationAxiom(owlEntity));
-        }
+        if (owlEntity == null) throw new OWLParserException("Invalid declaration identifier: " + id);
+        addAxiom(ontology, dataFactory.getOWLDeclarationAxiom(owlEntity));
     }
 
-    private static final java.util.List<OWLAxiom> lastAxioms = new java.util.concurrent.CopyOnWriteArrayList<>();
-    static final java.util.List<String> actiniumTrace = new java.util.ArrayList<>();
-    static boolean debugClassExpr = false;
-
     private void parseSubClassOf(InputStream stream, OWLOntology ontology) throws IOException {
-        OWLClassExpression subClass = parseClassExpression(stream);
-        boolean isActinium = subClass.toString().contains("Actinium");
-        if (isActinium) {
-            actiniumTrace.add("=== START PARSING SUPERCLASS OF ACTINIUM ===");
-            debugClassExpr = true;
-        }
-        OWLClassExpression superClass;
-        try {
-            superClass = parseClassExpression(stream);
-        } finally {
-            if (isActinium) {
-                debugClassExpr = false;
-                try {
-                    java.nio.file.Files.write(java.nio.file.Paths.get("actinium_trace.txt"), actiniumTrace);
-                } catch (Exception e) {}
-            }
-        }
-        if (isActinium) {
-            actiniumTrace.add("=== FINISHED PARSING SUPERCLASS OF ACTINIUM ===");
-            actiniumTrace.add("RESULT: " + superClass);
-        }
-        OWLSubClassOfAxiom ax = dataFactory.getOWLSubClassOfAxiom(subClass, superClass);
-        lastAxioms.add(ax);
-        if (lastAxioms.size() > 50) lastAxioms.remove(0);
-        ontology.add(ax);
+        OWLClassExpression sub = parseClassExpression(stream);
+        OWLClassExpression sup = parseClassExpression(stream);
+        addAxiom(ontology, dataFactory.getOWLSubClassOfAxiom(sub, sup));
     }
 
     private void parseSubObjectPropertyOf(InputStream stream, int utility, OWLOntology ontology) throws IOException {
-        // Se il bit 0 dell'utility flag e impostato, il frame rappresenta una catena di proprieta (SubPropertyChainOf)
-        if ((utility & 0x01) != 0) {
+        // Current specification: bit 1 denotes a chain; bit 0 is reserved for annotations.
+        if ((utility & (isLegacyDialect ? 0x01 : 0x02)) != 0) {
             int count = readVarInt(stream);
             List<OWLObjectPropertyExpression> chain = new ArrayList<>();
             for (int i = 0; i < count; i++) {
                 chain.add(parseObjectPropertyExpression(stream));
             }
             OWLObjectPropertyExpression sup = parseObjectPropertyExpression(stream);
-            ontology.add(dataFactory.getOWLSubPropertyChainOfAxiom(chain, sup));
+            addAxiom(ontology, dataFactory.getOWLSubPropertyChainOfAxiom(chain, sup));
         } else {
             OWLObjectPropertyExpression sub = parseObjectPropertyExpression(stream);
             OWLObjectPropertyExpression sup = parseObjectPropertyExpression(stream);
-            ontology.add(dataFactory.getOWLSubObjectPropertyOfAxiom(sub, sup));
+            addAxiom(ontology, dataFactory.getOWLSubObjectPropertyOfAxiom(sub, sup));
         }
     }
 
@@ -693,21 +654,21 @@ class Parser {
         for (int i = 0; i < count; i++) {
             ces.add(parseClassExpression(stream));
         }
-        ontology.add(dataFactory.getOWLDisjointUnionAxiom(cls, ces));
+        addAxiom(ontology, dataFactory.getOWLDisjointUnionAxiom(cls, ces));
     }
 
     private void parseSubDataPropertyOf(InputStream stream, OWLOntology ontology) throws IOException {
         OWLDataPropertyExpression sub = parseDataPropertyExpression(stream);
         OWLDataPropertyExpression sup = parseDataPropertyExpression(stream);
-        ontology.add(dataFactory.getOWLSubDataPropertyOfAxiom(sub, sup));
+        addAxiom(ontology, dataFactory.getOWLSubDataPropertyOfAxiom(sub, sup));
     }
 
     private void parseEquivalentDataProperties(InputStream stream, OWLOntology ontology) throws IOException {
-        ontology.add(dataFactory.getOWLEquivalentDataPropertiesAxiom(readDataProperties(stream)));
+        addAxiom(ontology, dataFactory.getOWLEquivalentDataPropertiesAxiom(readDataProperties(stream)));
     }
 
     private void parseDisjointDataProperties(InputStream stream, OWLOntology ontology) throws IOException {
-        ontology.add(dataFactory.getOWLDisjointDataPropertiesAxiom(readDataProperties(stream)));
+        addAxiom(ontology, dataFactory.getOWLDisjointDataPropertiesAxiom(readDataProperties(stream)));
     }
 
     private List<OWLDataPropertyExpression> readDataProperties(InputStream stream) throws IOException {
@@ -721,23 +682,23 @@ class Parser {
 
     private void parseDataPropertyDomain(InputStream stream, OWLOntology ontology) throws IOException {
         OWLDataPropertyExpression property = parseDataPropertyExpression(stream);
-        ontology.add(dataFactory.getOWLDataPropertyDomainAxiom(property, parseClassExpression(stream)));
+        addAxiom(ontology, dataFactory.getOWLDataPropertyDomainAxiom(property, parseClassExpression(stream)));
     }
 
     private void parseDataPropertyRange(InputStream stream, OWLOntology ontology) throws IOException {
         OWLDataPropertyExpression property = parseDataPropertyExpression(stream);
-        ontology.add(dataFactory.getOWLDataPropertyRangeAxiom(property, parseDataRange(stream)));
+        addAxiom(ontology, dataFactory.getOWLDataPropertyRangeAxiom(property, parseDataRange(stream)));
     }
 
     private void parseFunctionalDataProperty(InputStream stream, OWLOntology ontology) throws IOException {
         OWLDataPropertyExpression property = parseDataPropertyExpression(stream);
-        ontology.add(dataFactory.getOWLFunctionalDataPropertyAxiom(property));
+        addAxiom(ontology, dataFactory.getOWLFunctionalDataPropertyAxiom(property));
     }
 
     private void parseDatatypeDefinition(InputStream stream, OWLOntology ontology) throws IOException {
         OWLDatatype datatype = dataFactory.getOWLDatatype((IRI) getIdentifier(readVarInt(stream)));
         OWLDataRange dataRange = parseDataRange(stream);
-        ontology.add(dataFactory.getOWLDatatypeDefinitionAxiom(datatype, dataRange));
+        addAxiom(ontology, dataFactory.getOWLDatatypeDefinitionAxiom(datatype, dataRange));
     }
 
     private void parseHasKey(InputStream stream, OWLOntology ontology) throws IOException {
@@ -747,57 +708,57 @@ class Parser {
         List<OWLPropertyExpression> props = new ArrayList<>(opes.size() + dpes.size());
         props.addAll(opes);
         props.addAll(dpes);
-        ontology.add(dataFactory.getOWLHasKeyAxiom(ce, props));
+        addAxiom(ontology, dataFactory.getOWLHasKeyAxiom(ce, props));
     }
 
     private void parseNegativeObjectPropertyAssertion(InputStream stream, OWLOntology ontology) throws IOException {
         OWLObjectPropertyExpression property = parseObjectPropertyExpression(stream);
         OWLIndividual subj = parseIndividual(stream);
         OWLIndividual obj = parseIndividual(stream);
-        ontology.add(dataFactory.getOWLNegativeObjectPropertyAssertionAxiom(property, subj, obj));
+        addAxiom(ontology, dataFactory.getOWLNegativeObjectPropertyAssertionAxiom(property, subj, obj));
     }
 
     private void parseNegativeDataPropertyAssertion(InputStream stream, OWLOntology ontology) throws IOException {
         OWLDataPropertyExpression property = parseDataPropertyExpression(stream);
         OWLIndividual subj = parseIndividual(stream);
         OWLLiteral obj = parseLiteral(stream);
-        ontology.add(dataFactory.getOWLNegativeDataPropertyAssertionAxiom(property, subj, obj));
+        addAxiom(ontology, dataFactory.getOWLNegativeDataPropertyAssertionAxiom(property, subj, obj));
     }
 
     private void parseSubAnnotationPropertyOf(InputStream stream, OWLOntology ontology) throws IOException {
         OWLAnnotationProperty sub = dataFactory.getOWLAnnotationProperty((IRI) getIdentifier(readVarInt(stream)));
         OWLAnnotationProperty sup = dataFactory.getOWLAnnotationProperty((IRI) getIdentifier(readVarInt(stream)));
-        ontology.add(dataFactory.getOWLSubAnnotationPropertyOfAxiom(sub, sup));
+        addAxiom(ontology, dataFactory.getOWLSubAnnotationPropertyOfAxiom(sub, sup));
     }
 
     private void parseEquivalentObjectProperties(InputStream stream, OWLOntology ontology) throws IOException {
-        ontology.add(dataFactory.getOWLEquivalentObjectPropertiesAxiom(
+        addAxiom(ontology, dataFactory.getOWLEquivalentObjectPropertiesAxiom(
                 readObjectPropertyExpressions(stream)));
     }
 
     private void parseDisjointObjectProperties(InputStream stream, OWLOntology ontology) throws IOException {
-        ontology.add(dataFactory.getOWLDisjointObjectPropertiesAxiom(
+        addAxiom(ontology, dataFactory.getOWLDisjointObjectPropertiesAxiom(
                 readObjectPropertyExpressions(stream)));
     }
 
     private void parseInverseObjectProperties(InputStream stream, OWLOntology ontology) throws IOException {
         OWLObjectPropertyExpression first = parseObjectPropertyExpression(stream);
         OWLObjectPropertyExpression second = parseObjectPropertyExpression(stream);
-        ontology.add(dataFactory.getOWLInverseObjectPropertiesAxiom(first, second));
+        addAxiom(ontology, dataFactory.getOWLInverseObjectPropertiesAxiom(first, second));
     }
 
     private void parseObjectPropertyDomain(InputStream stream, OWLOntology ontology) throws IOException {
         OWLObjectPropertyExpression property = parseObjectPropertyExpression(stream);
         OWLClassExpression ce = parseClassExpression(stream);
         OWLObjectPropertyDomainAxiom ax = dataFactory.getOWLObjectPropertyDomainAxiom(property, ce);
-        ontology.add(ax);
+        addAxiom(ontology, ax);
     }
 
     private void parseObjectPropertyRange(InputStream stream, OWLOntology ontology) throws IOException {
         OWLObjectPropertyExpression property = parseObjectPropertyExpression(stream);
         OWLClassExpression ce = parseClassExpression(stream);
         OWLObjectPropertyRangeAxiom ax = dataFactory.getOWLObjectPropertyRangeAxiom(property, ce);
-        ontology.add(ax);
+        addAxiom(ontology, ax);
     }
 
     private List<OWLObjectPropertyExpression> readObjectPropertyExpressions(InputStream stream) throws IOException {
@@ -810,11 +771,11 @@ class Parser {
     }
 
     private void parseSameIndividuals(InputStream stream, OWLOntology ontology) throws IOException {
-        ontology.add(dataFactory.getOWLSameIndividualAxiom(readIndividuals(stream)));
+        addAxiom(ontology, dataFactory.getOWLSameIndividualAxiom(readIndividuals(stream)));
     }
 
     private void parseDifferentIndividuals(InputStream stream, OWLOntology ontology) throws IOException {
-        ontology.add(dataFactory.getOWLDifferentIndividualsAxiom(readIndividuals(stream)));
+        addAxiom(ontology, dataFactory.getOWLDifferentIndividualsAxiom(readIndividuals(stream)));
     }
 
     private List<OWLIndividual> readIndividuals(InputStream stream) throws IOException {
@@ -833,7 +794,7 @@ class Parser {
             operands.add(parseClassExpression(stream));
         }
         // Mantiene l'ordine di lettura e delega all'OWLAPI la normalizzazione interna.
-        ontology.add(dataFactory.getOWLEquivalentClassesAxiom(operands));
+        addAxiom(ontology, dataFactory.getOWLEquivalentClassesAxiom(operands));
     }
 
     private void parseDisjointClasses(InputStream stream, OWLOntology ontology) throws IOException {
@@ -843,28 +804,28 @@ class Parser {
             operands.add(parseClassExpression(stream));
         }
         // Mantiene l'ordine di lettura e delega all'OWLAPI la normalizzazione interna.
-        ontology.add(dataFactory.getOWLDisjointClassesAxiom(operands));
+        addAxiom(ontology, dataFactory.getOWLDisjointClassesAxiom(operands));
     }
     
     private void parseClassAssertion(InputStream stream, OWLOntology ontology) throws IOException {
         OWLClassExpression ce = parseClassExpression(stream);
         OWLIndividual ind = parseIndividual(stream);
         OWLClassAssertionAxiom ax = dataFactory.getOWLClassAssertionAxiom(ce, ind);
-        ontology.add(ax);
+        addAxiom(ontology, ax);
     }
 
     private void parseObjectPropertyAssertion(InputStream stream, OWLOntology ontology) throws IOException {
         OWLObjectPropertyExpression ope = parseObjectPropertyExpression(stream);
         OWLIndividual subj = parseIndividual(stream);
         OWLIndividual obj = parseIndividual(stream);
-        ontology.add(dataFactory.getOWLObjectPropertyAssertionAxiom(ope, subj, obj));
+        addAxiom(ontology, dataFactory.getOWLObjectPropertyAssertionAxiom(ope, subj, obj));
     }
 
     private void parseDataPropertyAssertion(InputStream stream, OWLOntology ontology) throws IOException {
         OWLDataPropertyExpression dpe = parseDataPropertyExpression(stream);
         OWLIndividual subj = parseIndividual(stream);
         OWLLiteral lit = parseLiteral(stream);
-        ontology.add(dataFactory.getOWLDataPropertyAssertionAxiom(dpe, subj, lit));
+        addAxiom(ontology, dataFactory.getOWLDataPropertyAssertionAxiom(dpe, subj, lit));
     }
 
     private void parseAnnotationAssertion(InputStream stream, OWLOntology ontology) throws IOException {
@@ -876,7 +837,7 @@ class Parser {
         }
         OWLAnnotationValue value = parseAnnotationValue(stream);
         OWLAnnotation annotation = dataFactory.getOWLAnnotation(property, value);
-        ontology.add(dataFactory.getOWLAnnotationAssertionAxiom(
+        addAxiom(ontology, dataFactory.getOWLAnnotationAssertionAxiom(
                 (OWLAnnotationSubject) subject, annotation));
     }
 
@@ -890,11 +851,6 @@ class Parser {
      */
     private OWLClassExpression parseClassExpression(InputStream stream) throws IOException {
         int header = readVarInt(stream);
-        if (debugClassExpr) {
-            String msg = String.format("  parseClassExpr: header=%d (0x%02X), avail=%d", header, header, stream.available());
-            actiniumTrace.add(msg);
-            System.err.println(msg);
-        }
 
         // Header oltre soglia: riferimento a classe named tramite indice offsettato.
         if (header >= Constants.TMAX_CLASS_EXPRESSION) {
@@ -1098,11 +1054,6 @@ private OWLLiteral parseLiteral(InputStream stream) throws IOException {
         int type = header & 0x03;
         int format = (header >> 2) & 0x3F;
 
-        if (debugClassExpr) {
-            String msg = String.format("    parseLiteral: header=0x%02X, type=%d, format=%d, avail=%d", header, type, format, stream.available());
-            actiniumTrace.add(msg);
-            System.err.println(msg);
-        }
 
         String valueStr;
 
@@ -1119,23 +1070,23 @@ private OWLLiteral parseLiteral(InputStream stream) throws IOException {
                 valueStr = (b == 1) ? "true" : "false";
                 break;
             case Constants.LITERAL_FMT_SIGNED_INT:
-                int sVal = readSVarInt(stream);
+                BigInteger sVal = readSignedValue(stream);
                 valueStr = String.valueOf(sVal);
                 break;
             case Constants.LITERAL_FMT_UNSIGNED_INT:
-                int uVal = readVarInt(stream);
+                BigInteger uVal = readUnsignedValue(stream);
                 valueStr = String.valueOf(uVal);
                 break;
             case Constants.LITERAL_FMT_FLOAT:
-                int intPart = readSVarInt(stream);
-                int fracPart = readVarInt(stream);
-                valueStr = intPart + "." + fracPart;
+                BigInteger intPart = readSignedValue(stream);
+                BigInteger fracPart = readUnsignedValue(stream);
+                valueStr = intPart + "." + new StringBuilder(fracPart.toString()).reverse();
                 break;
             case Constants.LITERAL_FMT_DOUBLE:
-                int dIntPart = readSVarInt(stream);
-                int dFracPart = readVarInt(stream);
-                int expPart = readSVarInt(stream);
-                valueStr = dIntPart + "." + dFracPart + (expPart != 0 ? ("E" + expPart) : "");
+                BigInteger dIntPart = readSignedValue(stream);
+                BigInteger dFracPart = readUnsignedValue(stream);
+                BigInteger expPart = readSignedValue(stream);
+                valueStr = dIntPart + "." + new StringBuilder(dFracPart.toString()).reverse() + "E" + expPart;
                 break;
             default:
                 throw new OWLParserException("Formato Literal non supportato: " + format);
@@ -1201,17 +1152,21 @@ private OWLLiteral parseLiteral(InputStream stream) throws IOException {
         return value;
     }
 
-    /**
-     * Decodifica un intero con segno usando la mappatura Zig-Zag.
-     */
-    private int readSVarInt(InputStream stream) throws IOException {
-        int raw = readVarInt(stream);
-        // Se è pari, il numero originale era positivo. Se dispari, era negativo.
-        if ((raw & 1) == 0) {
-            return raw / 2;
-        } else {
-            return -(raw + 1) / 2;
+    private BigInteger readUnsignedValue(InputStream stream) throws IOException {
+        BigInteger value = BigInteger.ZERO;
+        int shift = 0;
+        while (true) {
+            int b = stream.read();
+            if (b < 0) throw new IOException("Unexpected end of numeric literal");
+            value = value.or(BigInteger.valueOf(b & 0x7F).shiftLeft(shift));
+            if ((b & 0x80) == 0) return value;
+            shift += 7;
         }
+    }
+
+    private BigInteger readSignedValue(InputStream stream) throws IOException {
+        BigInteger raw = readUnsignedValue(stream);
+        return raw.testBit(0) ? raw.shiftRight(1).negate().subtract(BigInteger.ONE) : raw.shiftRight(1);
     }
 
     /**
