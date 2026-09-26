@@ -1,5 +1,9 @@
 # Modifiche alla fase benchmark e lettura della storia Git
 
+Nota: questo documento descrive i commit precedenti alle correzioni locali del
+26 settembre. Per lo stato attuale, incluso il confronto rigoroso dei prefissi,
+fare riferimento a [BENCHMARK.md](BENCHMARK.md).
+
 Questa guida descrive le correzioni rispetto al commit `06d4163` del branch
 `review/pr-3`. Le correzioni sono state sviluppate e verificate il 24 settembre
 2026 e successivamente organizzate in commit tematici su `fix/benchmark-compliance`.

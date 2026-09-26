@@ -74,3 +74,29 @@ Ambiente: macOS, JDK 24, Gradle wrapper 9.0.0, heap dei test fino a 4 GiB.
 Il benchmark completo da 500 JVM non è stato rieseguito: oltre al blocco sui
 binari, questa macchina non dispone di GNU time. I CSV e l'ambiente del benchmark
 precedente non sono stati spacciati per risultati delle correzioni.
+
+## Verifica rigorosa dei prefissi, 26 settembre 2026
+
+Il parser non sintetizza più un alias dal percorso del namespace e il confronto
+non aggiunge più un default mancante. Le 190 coppie del dataset prima valide
+continuano a completare a/b/c con confronto esatto dei prefissi; rimangono le
+stesse dieci differenze sui decimali.
+
+È emersa un'ulteriore incoerenza nei riferimenti di base, fuori dal dataset ORE:
+`lib/src/test/resources/pizza.owl` dichiara il prefisso `pizza:`, ma
+`pizza.oprt` dichiara solo default, `dc:`, `terms:` e `skos:` oltre ai cinque
+prefissi impliciti. In precedenza `addConventionalAlias` ricostruiva `pizza:`
+dal percorso `/pizza/pizza.owl#`, nascondendo la differenza. Questa euristica
+aggiungeva anche alias inesistenti ad altri documenti e perciò è stata rimossa.
+
+Il test `testPizzaOntology` ora fallisce nel confronto col binario fornito; il
+round-trip del Functional tramite il renderer corrente viene verificato prima
+e passa, conservando l'alias esplicito. Serve un riferimento binario che conservi
+anche questo prefisso, oppure un chiarimento del contratto da parte del docente.
+Il progetto non modifica i riferimenti e non rende permissivo il confronto.
+
+Esiti aggiornati: 35/36 casi rapidi superati (tutte le 14 nuove regressioni passano),
+300/300 operazioni di copertura riuscite, 190/200 round-trip riusciti senza skip.
+I cinque test isolati dello script passano. Il benchmark completo non è stato
+eseguito: i prerequisiti non sono superati e GNU time non è disponibile localmente.
+I risultati storici si trovano ora in `historical/2026-09-20/`.
