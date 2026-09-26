@@ -1,6 +1,7 @@
 package it.poliba.sisinflab.protocowl;
 
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -480,30 +481,11 @@ class Parser {
                 namespaces.add(namespace);
                 String normalizedPrefix = prefix.isEmpty() ? ":" : prefix;
                 format.setPrefix(normalizedPrefix, namespace);
-                addConventionalAlias(format, normalizedPrefix, namespace);
             } else {
                 String namespace = readString(stream);
                 namespaces.add(namespace);
             }
         }
-    }
-
-    private void addConventionalAlias(ProtocOWLDocumentFormat format, String prefix, String namespace) {
-        if (!prefix.equals(":")) return;
-
-        String path = namespace.endsWith("#") ? namespace.substring(0, namespace.length() - 1) : namespace;
-        int lastSlash = path.lastIndexOf('/');
-        if (lastSlash < 1) return;
-
-        String fileName = path.substring(lastSlash + 1);
-        if (!fileName.endsWith(".owl")) return;
-
-        String alias = fileName.substring(0, fileName.length() - 4);
-        String parent = path.substring(0, lastSlash);
-        int parentSlash = parent.lastIndexOf('/');
-        if (parentSlash < 0 || !parent.substring(parentSlash + 1).equals(alias)) return;
-
-        format.setPrefix(alias + ":", namespace);
     }
 
     private void parseIdentifierDeclaration(InputStream stream, int utility) throws IOException {
@@ -575,6 +557,7 @@ class Parser {
     private OWLAnnotation parseAnnotation(InputStream stream) throws IOException {
         int header = readVarInt(stream);
         List<OWLAnnotation> annotations = new ArrayList<>();
+        int propertyId;
         
         // Se header == 0, l'annotazione è a sua volta annotata
         if (header == 0) {
@@ -582,10 +565,12 @@ class Parser {
             for (int i = 0; i < count; i++) {
                 annotations.add(parseAnnotation(stream));
             }
-            header = readVarInt(stream) + 1; // Annotated form stores a raw AP identifier.
+            propertyId = readVarInt(stream); // Annotated form stores a raw AP identifier.
+        } else {
+            propertyId = header - 1;
         }
         
-        OWLAnnotationProperty ap = dataFactory.getOWLAnnotationProperty((IRI) getIdentifier(header - 1));
+        OWLAnnotationProperty ap = dataFactory.getOWLAnnotationProperty((IRI) getIdentifier(propertyId));
         OWLAnnotationValue value = parseAnnotationValue(stream);
         return dataFactory.getOWLAnnotation(ap, value, annotations.stream());
     }
@@ -893,9 +878,9 @@ class Parser {
                     OWLObjectPropertyExpression propHasSelf = parseObjectPropertyExpression(stream);
                     return dataFactory.getOWLObjectHasSelf(propHasSelf);
                 case Constants.CLASS_EXPR_MIN_CARD:
-                    int cardField = readVarInt(stream);
+                    long cardField = readBoundedVarInt(stream, 0xFFFFFFFFL);
                     boolean hasFiller = (cardField & 1) != 0; // Bit 0 indica se c'è un filler
-                    int cardinality = cardField >> 1; // Bit 1-31 rappresentano la cardinalità
+                    int cardinality = (int) (cardField >>> 1); // Bit 1-31 rappresentano la cardinalità
                     OWLObjectPropertyExpression propMin = parseObjectPropertyExpression(stream);
                     OWLClassExpression fillerMin;
                     if (hasFiller) {
@@ -905,18 +890,18 @@ class Parser {
                     }
                     return dataFactory.getOWLObjectMinCardinality(cardinality, propMin, fillerMin);
                 case Constants.CLASS_EXPR_MAX_CARD:
-                    int maxCardField = readVarInt(stream);
+                    long maxCardField = readBoundedVarInt(stream, 0xFFFFFFFFL);
                     boolean maxHasFiller = (maxCardField & 1) != 0;
-                    int maxCardinality = maxCardField >> 1;
+                    int maxCardinality = (int) (maxCardField >>> 1);
                     OWLObjectPropertyExpression propMax = parseObjectPropertyExpression(stream);
                     OWLClassExpression fillerMax = maxHasFiller
                             ? parseClassExpression(stream)
                             : dataFactory.getOWLThing();
                     return dataFactory.getOWLObjectMaxCardinality(maxCardinality, propMax, fillerMax);
                 case Constants.CLASS_EXPR_EXACT_CARD:
-                    int exactCardField = readVarInt(stream);
+                    long exactCardField = readBoundedVarInt(stream, 0xFFFFFFFFL);
                     boolean exactHasFiller = (exactCardField & 1) != 0;
-                    int exactCardinality = exactCardField >> 1;
+                    int exactCardinality = (int) (exactCardField >>> 1);
                     OWLObjectPropertyExpression propExact = parseObjectPropertyExpression(stream);
                     OWLClassExpression fillerExact = exactHasFiller
                             ? parseClassExpression(stream)
@@ -935,23 +920,23 @@ class Parser {
                     OWLLiteral valueData = parseLiteral(stream);
                     return dataFactory.getOWLDataHasValue(propHasValueData, valueData);
                 case Constants.CLASS_EXPR_DATA_MIN_CARD:
-                    int cardFieldData = readVarInt(stream);
+                    long cardFieldData = readBoundedVarInt(stream, 0xFFFFFFFFL);
                     boolean hasFillerMinData = (cardFieldData & 1) != 0;
-                    int cardMinData = cardFieldData >> 1;
+                    int cardMinData = (int) (cardFieldData >>> 1);
                     OWLDataPropertyExpression propMinData = parseDataPropertyExpression(stream);
                     OWLDataRange fillerMinData = hasFillerMinData ? parseDataRange(stream) : dataFactory.getTopDatatype();
                     return dataFactory.getOWLDataMinCardinality(cardMinData, propMinData, fillerMinData);
                 case Constants.CLASS_EXPR_DATA_MAX_CARD:
-                    int maxCardFieldData = readVarInt(stream);
+                    long maxCardFieldData = readBoundedVarInt(stream, 0xFFFFFFFFL);
                     boolean hasFillerMaxData = (maxCardFieldData & 1) != 0;
-                    int maxCardData = maxCardFieldData >> 1;
+                    int maxCardData = (int) (maxCardFieldData >>> 1);
                     OWLDataPropertyExpression propMaxData = parseDataPropertyExpression(stream);
                     OWLDataRange fillerMaxData = hasFillerMaxData ? parseDataRange(stream) : dataFactory.getTopDatatype();
                     return dataFactory.getOWLDataMaxCardinality(maxCardData, propMaxData, fillerMaxData);
                 case Constants.CLASS_EXPR_DATA_EXACT_CARD:
-                    int exactCardFieldData = readVarInt(stream);
+                    long exactCardFieldData = readBoundedVarInt(stream, 0xFFFFFFFFL);
                     boolean hasFillerExactData = (exactCardFieldData & 1) != 0;
-                    int exactCardData = exactCardFieldData >> 1;
+                    int exactCardData = (int) (exactCardFieldData >>> 1);
                     OWLDataPropertyExpression propExactData = parseDataPropertyExpression(stream);
                     OWLDataRange fillerExactData = hasFillerExactData ? parseDataRange(stream) : dataFactory.getTopDatatype();
                     return dataFactory.getOWLDataExactCardinality(exactCardData, propExactData, fillerExactData);
@@ -1139,17 +1124,23 @@ private OWLLiteral parseLiteral(InputStream stream) throws IOException {
      * Legge un intero a lunghezza variabile codificato in base 128 little-endian.
      */
     private int readVarInt(InputStream stream) throws IOException {
-        int value = 0;
-        int shift = 0;
-        int b;
-        do {
-            b = stream.read();
-            if (b == -1) throw new IOException("Unexpected end of stream while reading VarInt");
-            // Appende i 7 bit di payload nella posizione corrente.
-            value |= (b & 0x7F) << shift;
-            shift += 7;
-        } while ((b & 0x80) != 0); // Continua finché il bit di continuazione (MSB) e impostato.
-        return value;
+        return (int) readBoundedVarInt(stream, Integer.MAX_VALUE);
+    }
+
+    /** Structural fields must fit before narrowing; packed cardinalities need 32 bits. */
+    private long readBoundedVarInt(InputStream stream, long maximum) throws IOException {
+        long value = 0;
+        for (int shift = 0; shift <= 28; shift += 7) {
+            int b = stream.read();
+            if (b < 0) throw new OWLParserException("Unexpected end of stream while reading VarInt");
+            long payload = b & 0x7F;
+            if (payload > ((maximum - value) >>> shift)) {
+                throw new OWLParserException("Structural VarInt exceeds supported maximum " + maximum);
+            }
+            value |= payload << shift;
+            if ((b & 0x80) == 0) return value;
+        }
+        throw new OWLParserException("Structural VarInt exceeds five bytes");
     }
 
     private BigInteger readUnsignedValue(InputStream stream) throws IOException {
@@ -1174,9 +1165,17 @@ private OWLLiteral parseLiteral(InputStream stream) throws IOException {
      */
     private String readString(InputStream stream) throws IOException {
         int length = readVarInt(stream);
-        byte[] bytes = new byte[length];
-        int read = stream.readNBytes(bytes, 0, length);
-        if (read != length) throw new IOException("Unexpected end of stream while reading String");
-        return new String(bytes, StandardCharsets.UTF_8);
+        // Do not allocate the declared length before receiving the payload. A truncated
+        // stream may advertise gigabytes while containing only a few bytes.
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream(Math.min(length, 8192));
+        byte[] buffer = new byte[Math.min(length, 8192)];
+        int remaining = length;
+        while (remaining > 0) {
+            int read = stream.readNBytes(buffer, 0, Math.min(remaining, buffer.length));
+            if (read == 0) throw new OWLParserException("Unexpected end of stream while reading String");
+            bytes.write(buffer, 0, read);
+            remaining -= read;
+        }
+        return bytes.toString(StandardCharsets.UTF_8);
     }
 }

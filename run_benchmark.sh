@@ -8,7 +8,6 @@ ENVIRONMENT_REPORT="${ENVIRONMENT_REPORT:-benchmark_environment.txt}"
 TIME_CMD="${TIME_CMD:-}"
 BENCH_JAVA_OPTS="${BENCH_JAVA_OPTS:-}"
 HEADER="Task,Format,Ontology,TimeMs,InputSizeBytes,OutputSizeBytes,MRSS_KB,CompressionRatioVsProtocOWL,SpaceSavingVsProtocOWL"
-printf '%s\n' "$HEADER" > "$OUTPUT_CSV"
 
 if [ -z "$TIME_CMD" ]; then
   if command -v gtime >/dev/null 2>&1; then TIME_CMD="gtime"; else TIME_CMD="/usr/bin/time"; fi
@@ -30,8 +29,15 @@ JVM_OPTS=()
 if [ -n "$BENCH_JAVA_OPTS" ]; then read -r -a JVM_OPTS <<< "$BENCH_JAVA_OPTS"; fi
 
 manifest=$(mktemp)
-trap 'rm -f "$manifest"' EXIT
+staged_csv=""
+staged_environment=""
+trap 'rm -f "$manifest" "${staged_csv:-}" "${staged_environment:-}"' EXIT
 java -cp "$JAVA_CP" benchmark.DatasetFiles > "$manifest"
+# Never replace the previous results when a prerequisite or measurement fails.
+# Stage on the destination filesystem; publish only after complete validation.
+staged_csv=$(mktemp "${OUTPUT_CSV}.XXXXXX")
+staged_environment=$(mktemp "${ENVIRONMENT_REPORT}.XXXXXX")
+printf '%s\n' "$HEADER" > "$staged_csv"
 {
   echo "TimestampUTC: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   echo "OperatingSystem: $(uname -a)"
@@ -54,7 +60,7 @@ java -cp "$JAVA_CP" benchmark.DatasetFiles > "$manifest"
   git status --short
   echo "Command: bash ./run_benchmark.sh"
   cat "$manifest"
-} > "$ENVIRONMENT_REPORT"
+} > "$staged_environment"
 
 stat_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 failed=0
@@ -79,7 +85,7 @@ run_task() {
   size=$(stat_size "$input"); standard_size=$(stat_size "$standard")
   ratio=$(awk -v s="$size" -v p="$standard_size" 'BEGIN {printf "%.6f",s/p}')
   saving=$(awk -v s="$size" -v p="$standard_size" 'BEGIN {printf "%.6f",(s-p)/s}')
-  printf '%s,%s,%s,%s\n' "$row" "$mrss" "$ratio" "$saving" >> "$OUTPUT_CSV"
+  printf '%s,%s,%s,%s\n' "$row" "$mrss" "$ratio" "$saving" >> "$staged_csv"
 }
 
 while IFS=$'\t' read -r ontology functional standard mis128; do
@@ -91,5 +97,9 @@ while IFS=$'\t' read -r ontology functional standard mis128; do
 done < "$manifest"
 
 # Lists all missing triples, duplicates, invalid metrics and phase-2 size mismatches.
-java -cp "$JAVA_CP" benchmark.BenchmarkResults "$OUTPUT_CSV" roundtrip_sizes.csv
+java -cp "$JAVA_CP" benchmark.BenchmarkResults "$staged_csv" roundtrip_sizes.csv
 if [ "$failed" -ne 0 ]; then exit 1; fi
+
+mv "$staged_environment" "$ENVIRONMENT_REPORT"
+mv "$staged_csv" "$OUTPUT_CSV"
+echo "Published validated benchmark: $OUTPUT_CSV (environment: $ENVIRONMENT_REPORT)"

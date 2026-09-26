@@ -29,6 +29,7 @@ class Renderer {
 
         // 2. Colleziona tutte le entità in gioco (Namespace e Identificatori)
         collectEntities(ontology);
+        validatePrefixes(format);
         collectPrefixNamespaces(format);
 
         // Popola la tabella degli identificatori in ordine rigoroso: prima tutti gli IRI, poi tutti gli anonimi
@@ -208,6 +209,25 @@ class Renderer {
             namespaceTable.put(ns, namespaceTable.size());
         }
         collectedIRIs.add(iri);
+    }
+
+    /** v1 implies the five reserved bindings and cannot encode extra aliases for them. */
+    private void validatePrefixes(ProtocOWLDocumentFormat format) throws IOException {
+        if (format == null) return;
+        Map<String, String> prefixes = format.getPrefixName2PrefixMap();
+        List<String> reservedNames = List.of("rdf:", "rdfs:", "xsd:", "owl:", "xml:");
+        for (String prefix : reservedNames) {
+            if (!prefixes.containsKey(prefix)) {
+                throw new IOException("ProtocOWL v1 cannot omit implicit reserved prefix: " + prefix);
+            }
+        }
+        for (var entry : prefixes.entrySet()) {
+            Integer index = namespaceTable.get(entry.getValue());
+            if (index != null && index < reservedNames.size() && !entry.getKey().equals(reservedNames.get(index))) {
+                throw new IOException("ProtocOWL v1 cannot preserve alias '" + entry.getKey()
+                        + "' for reserved namespace " + entry.getValue());
+            }
+        }
     }
 
     private void collectPrefixNamespaces(ProtocOWLDocumentFormat format) {
@@ -581,7 +601,7 @@ class Renderer {
                 int cardinality = minCard.getCardinality();
                 OWLClassExpression filler = minCard.getFiller();
                 boolean isThing = filler.isOWLThing();
-                int cardField = (cardinality << 1) | (isThing ? 0 : 1);
+                long cardField = ((long) cardinality << 1) | (isThing ? 0 : 1);
                 writeVarInt(stream, cardField);
                 writeObjectPropertyExpression(stream, minCard.getProperty());
                 if (!isThing) writeClassExpression(stream, filler);
@@ -631,7 +651,7 @@ class Renderer {
             OWLDataPropertyExpression property, OWLDataRange filler) throws IOException {
         writeVarInt(stream, type);
         boolean isTop = filler.isTopDatatype();
-        writeVarInt(stream, (cardinality << 1) | (isTop ? 0 : 1));
+        writeVarInt(stream, ((long) cardinality << 1) | (isTop ? 0 : 1));
         writeDataPropertyExpression(stream, property);
         if (!isTop) writeDataRange(stream, filler);
     }
@@ -682,7 +702,7 @@ class Renderer {
             OWLObjectPropertyExpression property, OWLClassExpression filler) throws IOException {
         writeVarInt(stream, type);
         boolean isThing = filler.isOWLThing();
-        writeVarInt(stream, (cardinality << 1) | (isThing ? 0 : 1));
+        writeVarInt(stream, ((long) cardinality << 1) | (isThing ? 0 : 1));
         writeObjectPropertyExpression(stream, property);
         if (!isThing) writeClassExpression(stream, filler);
     }
