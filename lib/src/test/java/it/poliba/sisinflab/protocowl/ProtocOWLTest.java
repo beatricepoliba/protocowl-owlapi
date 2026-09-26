@@ -6,12 +6,16 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.semanticweb.owlapi.apibinding.OWLManager;
 import org.semanticweb.owlapi.functional.parser.OWLFunctionalSyntaxOWLParserFactory;
 import org.semanticweb.owlapi.io.OWLParserFactory;
+import org.semanticweb.owlapi.model.OWLAxiom;
 import org.semanticweb.owlapi.model.OWLOntology;
 import org.semanticweb.owlapi.model.OWLOntologyCreationException;
 import org.semanticweb.owlapi.model.OWLOntologyStorageException;
@@ -25,33 +29,78 @@ public class ProtocOWLTest {
     private String getOprtPath(String name) { return "src/test/resources/" + name + ".oprt"; }
     private String getOutputPath(String name) { return "build/out_" + name + ".oprt"; }
 
-    private void assertEquals(OWLOntology in, OWLOntology out) {
+    public static void assertEquals(OWLOntology in, OWLOntology out) {
+        var axiomsA = in.axioms().collect(Collectors.toSet());
+        var axiomsB = out.axioms().collect(Collectors.toSet());
+        // Avoid building a potentially enormous diff on successful comparisons.
+        String diagnostic = axiomsA.equals(axiomsB) ? "Axioms match"
+                : comparisonDiagnostic(in, out, axiomsA, axiomsB);
+
         // 1. Controlla se gli ID delle ontologie sono uguali (incluso il Version IRI)
-        Assert.assertEquals(in.isNamed(), out.isNamed());
+        Assert.assertEquals(in.isNamed(), out.isNamed(), diagnostic);
         if (in.isNamed()) {
-            Assert.assertEquals(in.getOntologyID().getOntologyIRI(), out.getOntologyID().getOntologyIRI());
+            Assert.assertEquals(in.getOntologyID().getOntologyIRI(), out.getOntologyID().getOntologyIRI(), diagnostic);
             // RAFFORZAMENTO: Controllo del Version IRI 
-            Assert.assertEquals(in.getOntologyID().getVersionIRI(), out.getOntologyID().getVersionIRI());
+            Assert.assertEquals(in.getOntologyID().getVersionIRI(), out.getOntologyID().getVersionIRI(), diagnostic);
         }
 
-        // 2. Controlla se i prefissi sono uguali 
+        Assert.assertEquals(in.getImportsDeclarations(), out.getImportsDeclarations(), "Imports differ: " + diagnostic);
+
+        // 2. Controlla se i prefissi sono uguali (normalizzando il prefisso di default se derivato dall'Ontology IRI)
         var inFormat = in.getNonnullFormat().asPrefixOWLDocumentFormat();
         var outFormat = out.getNonnullFormat().asPrefixOWLDocumentFormat();
-        Assert.assertEquals(inFormat.getPrefixName2PrefixMap(), outFormat.getPrefixName2PrefixMap());
+        var inMap = new java.util.HashMap<>(inFormat.getPrefixName2PrefixMap());
+        var outMap = new java.util.HashMap<>(outFormat.getPrefixName2PrefixMap());
+        if (in.isNamed() && in.getOntologyID().getOntologyIRI().isPresent()) {
+            String defaultNs = in.getOntologyID().getOntologyIRI().get() + "#";
+            if (defaultNs.equals(outMap.get(":")) && !inMap.containsKey(":")) {
+                inMap.put(":", defaultNs);
+            }
+            if (defaultNs.equals(inMap.get(":")) && !outMap.containsKey(":")) {
+                outMap.put(":", defaultNs);
+            }
+        }
+        Assert.assertEquals(inMap, outMap, diagnostic);
 
         // 3. Controllo delle Annotazioni dell'Ontologia 
         var annA = in.annotations().collect(Collectors.toSet());
         var annB = out.annotations().collect(Collectors.toSet());
-        Assert.assertEquals(annA, annB, "Le annotazioni dell'ontologia non coincidono!");
+        Assert.assertEquals(annA, annB, "Le annotazioni dell'ontologia non coincidono!\n" + diagnostic);
 
         // 4. Controlla se gli assiomi sono uguali (senza considerare l'ordine)
-        var axiomsA = in.axioms().collect(Collectors.toSet());
-        var axiomsB = out.axioms().collect(Collectors.toSet());
-        Assert.assertEquals(axiomsA, axiomsB, "Gli assiomi non coincidono!");
+        Assert.assertEquals(axiomsA, axiomsB, "Gli assiomi non coincidono!\n" + diagnostic);
     }
 
-    private OWLOntology loadOntology(String filePath, OWLParserFactory parser) throws OWLOntologyCreationException {
+    private static String comparisonDiagnostic(OWLOntology in, OWLOntology out,
+                                               Set<OWLAxiom> axiomsA, Set<OWLAxiom> axiomsB) {
+        Set<OWLAxiom> onlyInOriginal = new LinkedHashSet<>(axiomsA);
+        onlyInOriginal.removeAll(axiomsB);
+
+        Set<OWLAxiom> onlyInReloaded = new LinkedHashSet<>(axiomsB);
+        onlyInReloaded.removeAll(axiomsA);
+
+        return "Differenza semantica:" + System.lineSeparator()
+                + "  Assiomi solo nell'originale (" + onlyInOriginal.size() + "):"
+                + formatAxioms(onlyInOriginal)
+                + "  Assiomi solo nella versione riletta (" + onlyInReloaded.size() + "):"
+                + formatAxioms(onlyInReloaded)
+                + "  Ontology ID originale: " + in.getOntologyID() + System.lineSeparator()
+                + "  Ontology ID riletta: " + out.getOntologyID();
+    }
+
+    private static String formatAxioms(Set<OWLAxiom> axioms) {
+        if (axioms.isEmpty()) {
+            return " nessuno" + System.lineSeparator();
+        }
+        return System.lineSeparator() + axioms.stream()
+                .map(axiom -> "    " + axiom)
+                .sorted()
+                .collect(Collectors.joining(System.lineSeparator(), "", System.lineSeparator()));
+    }
+
+    static OWLOntology loadOntology(String filePath, OWLParserFactory parser) throws OWLOntologyCreationException {
         var manager = OWLManager.createOWLOntologyManager();
+        manager.getOntologyConfigurator().withRemapAllAnonymousIndividualsIds(false);
         manager.setOntologyParsers(Set.of(parser));
         try (var stream = new BufferedInputStream(new FileInputStream(filePath))) {
             return manager.loadOntologyFromOntologyDocument(stream);
@@ -107,6 +156,126 @@ public class ProtocOWLTest {
     // ========================================================================
     // TEST NEGATIVI
     // ========================================================================
+
+    private static void writeVarInt(OutputStream out, int value) throws IOException {
+        do {
+            int b = value & 0x7F;
+            value >>>= 7;
+            if (value != 0) {
+                b |= 0x80;
+            }
+            out.write(b);
+        } while (value != 0);
+    }
+
+    private static void writeString(OutputStream out, String value) throws IOException {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        writeVarInt(out, bytes.length);
+        out.write(bytes);
+    }
+
+    @Test
+    public void testResetNamespacesOnlyKeepsIdentifiersAndRestartsNamespaceIndexes() throws Exception {
+        File resetFile = createResetFile(1, true, true, true);
+        try {
+            OWLOntology ontology = loadOntology(resetFile.getAbsolutePath(), new ProtocOWLParserFactory());
+            Assert.assertEquals(
+                    ontology.getOntologyID().getOntologyIRI().orElseThrow().toString(),
+                    "http://example.org/new/new");
+        } finally {
+            resetFile.delete();
+        }
+    }
+
+    @Test
+    public void testResetIdentifiersOnlyRestartsIdentifierIndexes() throws Exception {
+        File resetFile = createResetFile(2, false, true, true);
+        try {
+            OWLOntology ontology = loadOntology(resetFile.getAbsolutePath(), new ProtocOWLParserFactory());
+            Assert.assertEquals(
+                    ontology.getOntologyID().getOntologyIRI().orElseThrow().toString(),
+                    "http://example.org/new");
+        } finally {
+            resetFile.delete();
+        }
+    }
+
+    @Test
+    public void testResetNamespacesAndIdentifiersRestartsBothIndexes() throws Exception {
+        File resetFile = createResetFile(3, true, true, true);
+        try {
+            OWLOntology ontology = loadOntology(resetFile.getAbsolutePath(), new ProtocOWLParserFactory());
+            Assert.assertEquals(
+                    ontology.getOntologyID().getOntologyIRI().orElseThrow().toString(),
+                    "http://example.org/new/new");
+        } finally {
+            resetFile.delete();
+        }
+    }
+
+    @Test(expectedExceptions = OWLOntologyCreationException.class)
+    public void testResetRejectsUndeclaredNamespaceReference() throws Exception {
+        File resetFile = createResetFile(1, false, true, true);
+        try {
+            loadOntology(resetFile.getAbsolutePath(), new ProtocOWLParserFactory());
+        } finally {
+            resetFile.delete();
+        }
+    }
+
+    @Test(expectedExceptions = OWLOntologyCreationException.class)
+    public void testResetRejectsUndeclaredIdentifierReference() throws Exception {
+        File resetFile = createResetFile(2, false, false, false);
+        try {
+            loadOntology(resetFile.getAbsolutePath(), new ProtocOWLParserFactory());
+        } finally {
+            resetFile.delete();
+        }
+    }
+
+    private static File createResetFile(int utility, boolean redeclareNamespace,
+                                         boolean redeclareIdentifier, boolean useNewIdentifier)
+            throws IOException {
+        File resetFile = File.createTempFile("reset_mappings", ".oprt");
+        try (FileOutputStream fos = new FileOutputStream(resetFile)) {
+            fos.write(Constants.PROTOCOWL_VERSION);
+
+            fos.write(Constants.FRAME_NAMESPACE_DECL);
+            writeVarInt(fos, 1);
+            writeString(fos, "http://example.org/");
+
+            fos.write(Constants.FRAME_IDENTIFIER_DECL | (1 << 6));
+            writeVarInt(fos, 1);
+            writeVarInt(fos, 5);
+            writeString(fos, "old");
+
+            fos.write(Constants.FRAME_RESET | (utility << 6));
+
+            if ((utility & 1) != 0 && redeclareNamespace) {
+                fos.write(Constants.FRAME_NAMESPACE_DECL);
+                writeVarInt(fos, 1);
+                writeString(fos, "http://example.org/new/");
+            }
+
+            if ((utility & 1) != 0 && !redeclareNamespace && !redeclareIdentifier) {
+                fos.write(Constants.FRAME_IDENTIFIER_DECL | (1 << 6));
+                writeVarInt(fos, 1);
+                writeVarInt(fos, 5);
+                writeString(fos, "invalid");
+            }
+
+            if (redeclareIdentifier) {
+                fos.write(Constants.FRAME_IDENTIFIER_DECL | (1 << 6));
+                writeVarInt(fos, 1);
+                writeVarInt(fos, 5);
+                writeString(fos, useNewIdentifier ? "new" : "invalid");
+            }
+
+            fos.write(Constants.FRAME_ONTOLOGY_IRI);
+            writeVarInt(fos, (utility & 2) != 0 ? 0 : 1);
+        }
+        return resetFile;
+    }
 
     @Test(expectedExceptions = OWLOntologyCreationException.class)
     public void testUnsupportedVersion() throws Exception {
